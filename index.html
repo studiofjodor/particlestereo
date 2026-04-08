@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Audio Particle Constellation</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #fff;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            background: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #333;
+            backdrop-filter: blur(10px);
+        }
+        h2 { margin-top: 0; font-size: 1.2rem; font-weight: 300; letter-spacing: 1px;}
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        input[type="file"] { margin: 10px 0; }
+        audio { width: 100%; margin-top: 10px; outline: none; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h2>REACTIVE CONSTELLATION</h2>
+    <p style="font-size: 0.9rem; color: #aaa;">Lade einen Track hoch (.mp3, .wav):</p>
+    <input type="file" id="audioUpload" accept="audio/*"><br>
+    <audio id="audioElement" controls></audio>
+</div>
+
+<canvas id="visualizer"></canvas>
+
+<script>
+    let audioCtx, analyserL, analyserR, dataArrayL, dataArrayR;
+    let isInitialized = false;
+
+    const audioEl = document.getElementById('audioElement');
+    const uploadEl = document.getElementById('audioUpload');
+    const canvas = document.getElementById('visualizer');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+
+    // Canvas an Fenstergröße anpassen
+    function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Lokale Datei laden
+    uploadEl.addEventListener('change', function() {
+        const file = this.files[0];
+        if (file) {
+            const url = URL.createObjectURL(file);
+            audioEl.src = url;
+            audioEl.play();
+        }
+    });
+
+    // Audio API erst starten, wenn der User interagiert (Browser-Richtlinie)
+    audioEl.addEventListener('play', () => {
+        if (!isInitialized) {
+            initAudio();
+            isInitialized = true;
+        }
+    });
+
+    function initAudio() {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaElementSource(audioEl);
+        
+        // Signal in Links und Rechts aufteilen
+        const splitter = audioCtx.createChannelSplitter(2);
+        source.connect(splitter);
+        
+        analyserL = audioCtx.createAnalyser();
+        analyserL.fftSize = 512;
+        analyserR = audioCtx.createAnalyser();
+        analyserR.fftSize = 512;
+        
+        // Kanäle verbinden (0 = Links, 1 = Rechts)
+        splitter.connect(analyserL, 0);
+        splitter.connect(analyserR, 1);
+        
+        // Signal auch an die Boxen ausgeben
+        source.connect(audioCtx.destination);
+        
+        dataArrayL = new Uint8Array(analyserL.frequencyBinCount);
+        dataArrayR = new Uint8Array(analyserR.frequencyBinCount);
+        
+        animate();
+    }
+
+    // Partikel-System
+    const NUM_PARTICLES = 250;
+    let particles = [];
+
+    class Particle {
+        constructor() {
+            this.x = Math.random() * width;
+            this.y = Math.random() * height;
+            this.vx = (Math.random() - 0.5) * 2;
+            this.vy = (Math.random() - 0.5) * 2;
+            this.targetX = this.x;
+            this.targetY = this.y;
+            this.isTargeting = false;
+            this.baseSize = Math.random() * 1.5 + 0.5;
+            this.baseHue = Math.random() * 60 + 180; // Startet in kühlen Blau/Cyan-Tönen
+        }
+        
+        update(bass, mid, high, panOffset) {
+            if (this.isTargeting) {
+                // Bei starkem Bass: Fliege elegant zur geometrischen Zielposition (Pan-Offset verschiebt das Zentrum)
+                this.x += (this.targetX + panOffset - this.x) * 0.15;
+                this.y += (this.targetY - this.y) * 0.15;
+            } else {
+                // Freies Schweben: Mitten machen die Bewegung chaotischer
+                this.x += this.vx * (1 + mid * 2);
+                this.y += this.vy * (1 + mid * 2);
+                
+                // An den Rändern abprallen
+                if(this.x < 0 || this.x > width) this.vx *= -1;
+                if(this.y < 0 || this.y > height) this.vy *= -1;
+            }
+            
+            // Farb-Reaktion: Bass verschiebt die Farbe ins Warme (Rot/Pink), Höhen machen es weißer/heller
+            let hue = (this.baseHue + bass * 120) % 360;
+            let lightness = 50 + (high * 30); 
+            if(lightness > 100) lightness = 100;
+            
+            ctx.fillStyle = `hsl(${hue}, 80%, ${lightness}%)`;
+            
+            // Größen-Reaktion: Partikel werden durch den Bass größer
+            const currentSize = this.baseSize + (bass * 4);
+            
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, currentSize, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    for(let i=0; i<NUM_PARTICLES; i++) {
+        particles.push(new Particle());
+    }
+
+    // Hilfsfunktion: Durchschnittswerte eines Frequenzbereichs berechnen
+    function getAverage(array, startIndex, endIndex) {
+        let sum = 0;
+        for(let i=startIndex; i<endIndex; i++) {
+            sum += array[i];
+        }
+        return sum / (endIndex - startIndex);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        // Leicht transparenter schwarzer Hintergrund für sanfte Bewegungsspuren (Motion Blur)
+        ctx.fillStyle = 'rgba(5, 5, 5, 0.2)';
+        ctx.fillRect(0, 0, width, height);
+        
+        if(!isInitialized) return;
+
+        analyserL.getByteFrequencyData(dataArrayL);
+        analyserR.getByteFrequencyData(dataArrayR);
+        
+        let dataArray = new Uint8Array(dataArrayL.length);
+        let totalL = 0;
+        let totalR = 0;
+        
+        for(let i=0; i<dataArray.length; i++) {
+            dataArray[i] = (dataArrayL[i] + dataArrayR[i]) / 2;
+            totalL += dataArrayL[i];
+            totalR += dataArrayR[i];
+        }
+        
+        // Audio in 3 Bänder aufteilen (Werte normalisiert von 0.0 bis 1.0)
+        const bass = getAverage(dataArray, 0, 5) / 255;
+        const mid = getAverage(dataArray, 5, 40) / 255;
+        const high = getAverage(dataArray, 41, 200) / 255;
+        
+        // Stereo-Pan berechnen (-1 = nur Links, 1 = nur Rechts)
+        let pan = 0;
+        if (totalL + totalR > 0) {
+            pan = (totalR - totalL) / (totalL + totalR); 
+        }
+        
+        // Subtiles Hintergrund-Glühen je nach Panning (Links = Blau, Rechts = Orange)
+        const grad = ctx.createLinearGradient(0, 0, width, 0);
+        const leftGlow = Math.max(0, -pan * 50);  // max 50% Deckkraft
+        const rightGlow = Math.max(0, pan * 50);
+        grad.addColorStop(0, `rgba(0, 150, 255, ${leftGlow / 100})`);
+        grad.addColorStop(1, `rgba(255, 100, 0, ${rightGlow / 100})`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
+        
+        // Geometrische Formation bei starkem Bass (Beat-Detection)
+        const BASS_THRESHOLD = 0.75; // Ab diesem Wert reagieren sie geometrisch
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const panOffset = pan * (width * 0.15); // Verschiebt die Geometrie nach Links/Rechts
+        
+        if (bass > BASS_THRESHOLD) {
+            const radius = 120 + bass * 150;
+            particles.forEach((p, i) => {
+                p.isTargeting = true;
+                // Anordnung in einem Doppelkreis / Sternenform
+                const angle = (i / particles.length) * Math.PI * 2;
+                const r = (i % 2 === 0) ? radius : radius * 0.5;
+                p.targetX = centerX + Math.cos(angle) * r;
+                p.targetY = centerY + Math.sin(angle) * r;
+            });
+        } else {
+            particles.forEach(p => p.isTargeting = false);
+        }
+        
+        // Linien zwischen nahen Partikeln zeichnen (Konstellations-Effekt)
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.05 + high * 0.1})`;
+        ctx.beginPath();
+        for(let i=0; i<particles.length; i++) {
+            for(let j=i+1; j<particles.length; j++) {
+                const dx = particles[i].x - particles[j].x;
+                const dy = particles[i].y - particles[j].y;
+                const distSq = dx*dx + dy*dy;
+                
+                if(distSq < 5000) { // Wenn sie nah beieinander sind
+                    ctx.moveTo(particles[i].x, particles[i].y);
+                    ctx.lineTo(particles[j].x, particles[j].y);
+                }
+            }
+        }
+        ctx.stroke();
+        
+        // Partikel aktualisieren und zeichnen
+        particles.forEach(p => p.update(bass, mid, high, panOffset));
+    }
+</script>
+</body>
+</html>
